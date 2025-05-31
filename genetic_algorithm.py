@@ -263,7 +263,7 @@ class GeneticAlgorithm:
                         population_tensor = torch.tensor(
                             self.population, device=self.device
                         )
-                        
+
                         # Evaluar en paralelo usando GPU
                         fitness_scores = []
                         for i in range(
