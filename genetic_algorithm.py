@@ -1,181 +1,350 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from typing import List
+import multiprocessing as mp
+from functools import partial
+import signal
+import sys
+from neural_network import NeuralNetwork
+import torch
 
 
 class GeneticAlgorithm:
     def __init__(
-        self, population_size, generations, mutation_rate,
-        input_size, output_size, hidden_size=16
+        self,
+        population_size: int,
+        generations: int,
+        initial_mutation_rate: float,
+        input_size: int,
+        output_size: int,
+        hidden_layers: List[int] = [16, 16],
+        elite_size: int = 1,
+        crossover_points: int = 1,
+        diversity_threshold: float = 0.1,
+        diversity_reintroduction_rate: float = 0.1,
+        eval_episodes: int = 5,
+        early_stopping_patience: int = 10,
+        min_fitness_improvement: float = 0.01
     ):
+        # Mostrar información de GPU
+        print("\n=== Información de GPU ===")
+        print(f"CUDA disponible: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"Número de GPUs: {torch.cuda.device_count()}")
+            print(f"GPU actual: {torch.cuda.get_device_name(0)}")
+            print(f"Versión de CUDA: {torch.version.cuda}")
+        print("========================\n")
+
         self.population_size = population_size
         self.generations = generations
-        self.mutation_rate = mutation_rate
+        self.initial_mutation_rate = initial_mutation_rate
         self.input_size = input_size
         self.output_size = output_size
-        self.hidden_size = hidden_size
-        # Total de parámetros: W1 + b1 + W2 + b2
-        self.weights_size = (
-            input_size * hidden_size + hidden_size +
-            hidden_size * output_size + output_size
-        )
+        self.hidden_layers = hidden_layers
+        self.elite_size = elite_size
+        self.crossover_points = crossover_points
+        self.diversity_threshold = diversity_threshold
+        self.diversity_reintroduction_rate = diversity_reintroduction_rate
+        self.should_stop = False
+        self.eval_episodes = eval_episodes
+        self.early_stopping_patience = early_stopping_patience
+        self.min_fitness_improvement = min_fitness_improvement
+        # Configurar manejador de señales
+        signal.signal(signal.SIGINT, self._signal_handler)
+        # Crear red neuronal
+        self.nn = NeuralNetwork(input_size, hidden_layers, output_size)
+        # Initialize population and history
         self.population = self.initialize_population()
         self.best_fitness_history = []
         self.avg_fitness_history = []
-
-        # Crear directorio de outputs si no existe
+        self.fitness_scores_history = []
+        self.diversity_history = []
+        # Create output directory
         self.output_dir = 'outputs'
         os.makedirs(self.output_dir, exist_ok=True)
+        # Detectar y configurar dispositivo (GPU/CPU)
+        self.device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        print(f"Usando dispositivo: {self.device}")
+        # Configurar paralelización
+        if self.device.type == 'cuda':
+            self.use_gpu = True
+            self.num_workers = torch.cuda.device_count()
+        else:
+            self.use_gpu = False
+            self.num_workers = mp.cpu_count()
+        print(f"Usando {self.num_workers} workers para paralelización")
 
-    def initialize_population(self):
-        # Inicializar pesos cerca de 0 (normal)
+    def _signal_handler(self, signum, frame):
+        """Manejador de señal para detener el entrenamiento."""
+        print("\nDeteniendo el entrenamiento...")
+        self.should_stop = True
+        if hasattr(self, 'pool'):
+            self.pool.terminate()
+            self.pool.join()
+        sys.exit(0)
+
+    def initialize_population(self) -> np.ndarray:
+        """Initialize population with weights near zero."""
         return np.random.normal(
-            0, 0.1, (self.population_size, self.weights_size)
+            0, 0.1,
+            (self.population_size, self.nn.weights_size)
         )
 
-    def get_action(self, observation, individual):
-        # Extraer pesos y bias
-        idx = 0
-        # Capa 1
-        end1 = idx + self.input_size * self.hidden_size
-        W1 = individual[idx:end1].reshape(self.input_size, self.hidden_size)
-        idx = end1
-        b1 = individual[idx:idx + self.hidden_size]
-        idx += self.hidden_size
-        # Capa 2
-        end2 = idx + self.hidden_size * self.output_size
-        W2 = individual[idx:end2].reshape(self.hidden_size, self.output_size)
-        idx = end2
-        b2 = individual[idx:idx + self.output_size]
-        # Forward pass
-        h = np.tanh(np.dot(observation, W1) + b1)
-        action = np.dot(h, W2) + b2
-        return action
+    def evaluate_individual(
+        self,
+        individual: np.ndarray,
+        env,
+        max_steps: int
+    ) -> float:
+        """Evaluate individual's fitness over multiple episodes and average."""
+        total = 0
+        for _ in range(self.eval_episodes):
+            state, _ = env.reset()
+            total_reward = 0
+            steps = 0
+            for _ in range(max_steps):
+                action = self.nn.get_action(state, individual)
+                state, reward, terminated, truncated, _ = env.step(action)
+                total_reward += reward
+                steps += 1
+                if terminated or truncated:
+                    break
+            if steps == max_steps:
+                total_reward += 100
+            total += total_reward
+        return total / self.eval_episodes
 
-    def evaluate_fitness(self, individual, env, max_steps=1000):
-        observation = env.reset()
-        initial_x = observation[0]
-        survived_steps = 0
-        retroceso_penalty = 0
-        stable_height_bonus = 0
-        angle_penalty = 0
-        for step in range(max_steps):
-            action = self.get_action(observation, individual)
-            action = np.clip(
-                action,
-                env.action_space.low,
-                env.action_space.high
-            )
-            observation, reward, terminated, truncated, info = env.step(action)
-            current_x = observation[0]
-            current_height = observation[1]
-            if current_x < initial_x:
-                retroceso_penalty += abs(current_x - initial_x)
-            if 0.9 < current_height < 1.4:
-                stable_height_bonus += 0.5
-            angle_penalty += 0.1 * abs(observation[2])  # penalización suave
-            survived_steps += 1
-            if terminated or truncated:
-                break
-        avance_x = observation[0] - initial_x
-        fitness = (
-            avance_x + survived_steps - 0.2 * retroceso_penalty +
-            stable_height_bonus - angle_penalty
-        )
-        return fitness
+    def get_mutation_rate(self, generation: int) -> float:
+        """Get mutation rate for current generation."""
+        return self.initial_mutation_rate * (1 - generation / self.generations)
 
-    def select_parents(self, fitness_scores):
-        # Selección por torneo
+    def select_parents(self, fitness_scores: np.ndarray) -> np.ndarray:
+        """Select parents using tournament selection."""
         parents = []
-        for _ in range(self.population_size):
-            idxs = np.random.choice(len(fitness_scores), 3, replace=False)
-            winner = idxs[np.argmax(fitness_scores[idxs])]
+        tournament_size = min(3, len(fitness_scores))
+        for _ in range(len(fitness_scores) - self.elite_size):
+            candidates = np.random.choice(
+                len(fitness_scores),
+                size=tournament_size,
+                replace=False
+            )
+            winner = candidates[np.argmax(fitness_scores[candidates])]
             parents.append(self.population[winner])
         return np.array(parents)
 
-    def crossover(self, parents):
-        # Cruce de punto único
+    def crossover(self, parents: np.ndarray) -> np.ndarray:
+        """Perform crossover between parents."""
         offspring = []
         for i in range(0, len(parents), 2):
             if i + 1 < len(parents):
-                point = np.random.randint(1, self.weights_size)
-                child1 = np.concatenate([
-                    parents[i][:point],
-                    parents[i+1][point:]
-                ])
-                child2 = np.concatenate([
-                    parents[i+1][:point],
-                    parents[i][point:]
-                ])
-                offspring.extend([child1, child2])
+                p1, p2 = parents[i], parents[i + 1]
+                point = np.random.randint(0, self.nn.weights_size)
+                c1 = np.concatenate([p1[:point], p2[point:]])
+                c2 = np.concatenate([p2[:point], p1[point:]])
+                offspring.extend([c1, c2])
+            else:
+                offspring.append(parents[i])
         return np.array(offspring)
 
-    def mutate(self, offspring):
-        # Mutación gaussiana
-        mutation_mask = np.random.rand(*offspring.shape) < self.mutation_rate
+    def mutate(
+        self, offspring: np.ndarray, generation: int,
+        mutation_rate: float = None
+    ) -> np.ndarray:
+        """Mutate offspring with optional custom mutation rate."""
+        if mutation_rate is None:
+            mutation_rate = self.get_mutation_rate(generation)
+        mask = np.random.random(offspring.shape) < mutation_rate
         mutation = np.random.normal(0, 0.1, offspring.shape)
-        offspring[mutation_mask] += mutation[mutation_mask]
+        offspring[mask] += mutation[mask]
         return offspring
 
-    def plot_learning_curve(self):
-        """Genera y guarda la gráfica de la curva de aprendizaje."""
-        plt.figure(figsize=(10, 6))
-        generations = range(1, len(self.best_fitness_history) + 1)
+    def maintain_diversity(self, fitness_scores: np.ndarray) -> None:
+        """Maintain population diversity."""
+        if len(self.best_fitness_history) > 1:
+            if (self.best_fitness_history[-1] - self.best_fitness_history[-2]
+                    < self.diversity_threshold):
+                # Reintroduce random individuals
+                n_replace = min(
+                    int(len(fitness_scores) *
+                        self.diversity_reintroduction_rate),
+                    len(fitness_scores)
+                )
+                replace_indices = np.random.choice(
+                    len(fitness_scores),
+                    size=n_replace,
+                    replace=False
+                )
+                new_individuals = self.initialize_population()[:n_replace]
+                self.population[replace_indices] = new_individuals
 
-        plt.plot(
-            generations,
-            self.best_fitness_history,
-            'b-',
-            label='Mejor Fitness'
-        )
-        plt.plot(
-            generations,
-            self.avg_fitness_history,
-            'r-',
-            label='Fitness Promedio'
-        )
+    def calculate_population_diversity(self) -> float:
+        """Calculate population diversity using average pairwise distance."""
+        distances = []
+        for i in range(len(self.population)):
+            for j in range(i + 1, len(self.population)):
+                distance = np.linalg.norm(
+                    self.population[i] - self.population[j]
+                )
+                distances.append(distance)
+        return np.mean(distances) if distances else 0.0
 
-        plt.title('Curva de Aprendizaje del AG')
+    def normalize_fitness(self, fitness_scores: np.ndarray) -> np.ndarray:
+        """Normalize fitness scores to [0, 1] range."""
+        min_fitness = np.min(fitness_scores)
+        max_fitness = np.max(fitness_scores)
+        if max_fitness == min_fitness:
+            return np.ones_like(fitness_scores)
+        return (fitness_scores - min_fitness) / (max_fitness - min_fitness)
+
+    def get_adaptive_mutation_rate(
+        self, generation: int, diversity: float
+    ) -> float:
+        """Get adaptive mutation rate based on generation and diversity."""
+        base_rate = self.initial_mutation_rate * (
+            1 - generation / self.generations
+        )
+        # Increase mutation rate if diversity is low
+        if diversity < self.diversity_threshold:
+            return min(base_rate * 2, 0.5)  # Cap at 0.5
+        return base_rate
+
+    def should_stop_early(self) -> bool:
+        """Check if training should stop early."""
+        if len(self.best_fitness_history) < self.early_stopping_patience:
+            return False
+
+        recent_best = self.best_fitness_history[-self.early_stopping_patience:]
+        best_so_far = max(recent_best[:-1])
+        current_best = recent_best[-1]
+
+        return (current_best - best_so_far) < self.min_fitness_improvement
+
+    def plot_learning_curve(self) -> None:
+        """Plot learning curve with additional metrics."""
+        plt.figure(figsize=(12, 8))
+
+        # Plot fitness metrics
+        plt.subplot(2, 1, 1)
+        plt.plot(self.best_fitness_history, label='Mejor Fitness')
+        plt.plot(self.avg_fitness_history, label='Fitness Promedio')
         plt.xlabel('Generación')
         plt.ylabel('Fitness')
+        plt.title('Curva de Aprendizaje')
         plt.legend()
         plt.grid(True)
 
-        # Guardar la gráfica en el directorio de outputs
+        # Plot diversity
+        plt.subplot(2, 1, 2)
+        plt.plot(self.diversity_history, label='Diversidad de Población')
+        plt.xlabel('Generación')
+        plt.ylabel('Diversidad')
+        plt.title('Evolución de la Diversidad')
+        plt.legend()
+        plt.grid(True)
+
+        plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, 'learning_curve.png'))
         plt.close()
 
-    def run(self, env, max_steps=1000):
-        for gen in range(self.generations):
-            fitness_scores = np.array([
-                self.evaluate_fitness(ind, env, max_steps)
-                for ind in self.population
-            ])
-            best_fitness = np.max(fitness_scores)
-            avg_fitness = np.mean(fitness_scores)
-            self.best_fitness_history.append(best_fitness)
-            self.avg_fitness_history.append(avg_fitness)
-            print(
-                f"Gen {gen+1}/{self.generations} | "
-                f"Best: {best_fitness:.2f} | "
-                f"Avg: {avg_fitness:.2f}"
-            )
-            # Guardar el mejor individuo de la generación
-            # en el directorio de outputs
-            best_individual = self.population[np.argmax(fitness_scores)]
-            np.save(
-                os.path.join(
-                    self.output_dir,
-                    f'best_individual_gen_{gen+1}.npy'
-                ),
-                best_individual
-            )
-            parents = self.select_parents(fitness_scores)
-            offspring = self.crossover(parents)
-            offspring = self.mutate(offspring)
-            # Elitismo: mantener al mejor
-            elite_idx = np.argmax(fitness_scores)
-            offspring[0] = self.population[elite_idx]
-            self.population = offspring
-        print("\nEntrenamiento completado.")
-        self.plot_learning_curve()
+    def run(self, env, max_steps: int = 500) -> None:
+        """Run genetic algorithm with improved robustness."""
+        try:
+            for gen in range(self.generations):
+                if self.should_stop:
+                    break
+
+                if self.use_gpu:
+                    # Evaluación en GPU
+                    with torch.cuda.device(0):
+                        # Convertir población a tensor GPU
+                        population_tensor = torch.tensor(
+                            self.population, device=self.device
+                        )
+                        
+                        # Evaluar en paralelo usando GPU
+                        fitness_scores = []
+                        for i in range(
+                            0, len(population_tensor), self.num_workers
+                        ):
+                            batch = population_tensor[i:i + self.num_workers]
+                            batch_scores = []
+                            for individual in batch:
+                                score = self.evaluate_individual(
+                                    individual.cpu().numpy(), env, max_steps
+                                )
+                                batch_scores.append(score)
+                            fitness_scores.extend(batch_scores)
+                        fitness_scores = np.array(fitness_scores)
+                else:
+                    # Evaluación en CPU usando multiprocessing
+                    with mp.Pool(processes=self.num_workers) as pool:
+                        evaluate_func = partial(
+                            self.evaluate_individual,
+                            env=env,
+                            max_steps=max_steps
+                        )
+                        fitness_scores = np.array(
+                            pool.map(evaluate_func, self.population)
+                        )
+
+                # Calculate and store diversity
+                diversity = self.calculate_population_diversity()
+                self.diversity_history.append(diversity)
+
+                # Normalize fitness scores
+                normalized_fitness = self.normalize_fitness(fitness_scores)
+
+                # Update history
+                best_fitness = np.max(fitness_scores)
+                avg_fitness = np.mean(fitness_scores)
+                self.best_fitness_history.append(best_fitness)
+                self.avg_fitness_history.append(avg_fitness)
+                self.fitness_scores_history.append(fitness_scores)
+
+                print(
+                    f"Gen {gen+1}/{self.generations} | "
+                    f"Best: {best_fitness:.2f} | "
+                    f"Avg: {avg_fitness:.2f} | "
+                    f"Diversity: {diversity:.4f}"
+                )
+
+                # Check for early stopping
+                if self.should_stop_early():
+                    print("\nDeteniendo temprano debido a falta de mejora...")
+                    break
+
+                # Selection and reproduction with normalized fitness
+                parents = self.select_parents(normalized_fitness)
+                offspring = self.crossover(parents)
+
+                # Adaptive mutation
+                mutation_rate = self.get_adaptive_mutation_rate(gen, diversity)
+                offspring = self.mutate(offspring, gen, mutation_rate)
+
+                # Elitism
+                elite_indices = np.argsort(fitness_scores)[-self.elite_size:]
+                offspring[:self.elite_size] = self.population[elite_indices]
+
+                # Maintain diversity
+                self.maintain_diversity(fitness_scores)
+
+                # Update population
+                self.population = offspring
+
+                # Save best individual
+                best_idx = np.argmax(fitness_scores)
+                filename = f'best_individual_gen_{gen}.npy'
+                np.save(
+                    os.path.join(self.output_dir, filename),
+                    self.population[best_idx]
+                )
+
+        except KeyboardInterrupt:
+            print("\nDeteniendo el entrenamiento...")
+            self.should_stop = True
+        finally:
+            self.plot_learning_curve()
+            print("\nEntrenamiento completado.")
