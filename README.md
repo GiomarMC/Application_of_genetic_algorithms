@@ -1,110 +1,150 @@
-# Algoritmo Genético para Control de Agente
+# Algoritmo Genético para CartPole
 
-Este proyecto implementa un Algoritmo Genético (AG) para entrenar una red neuronal que controla un agente en un entorno de simulación. El algoritmo utiliza una población de individuos, donde cada individuo representa los pesos de una red neuronal simple.
+Este proyecto implementa un algoritmo genético para resolver el problema de CartPole usando Gymnasium, con soporte opcional para GPU usando CUDA.
 
-## Prerrequisitos
+## Descripción
 
-### Windows
-- Python 3.8 o superior
-- Visual Studio Build Tools (para compilar algunas dependencias)
-- Git (opcional, para clonar el repositorio)
+El problema de CartPole consiste en mantener un polo en equilibrio sobre un carrito móvil. El objetivo es mantener el polo en posición vertical el mayor tiempo posible.
 
-### Linux
-- Python 3.8 o superior
-- build-essential
-- python3-dev
-- git (opcional)
+### Características del entorno
+- 4 observaciones (estados):
+  - Posición del carrito
+  - Velocidad del carrito
+  - Ángulo del polo
+  - Velocidad angular del polo
+- 2 acciones posibles:
+  - 0: Mover el carrito a la izquierda
+  - 1: Mover el carrito a la derecha
+
+### Criterios de éxito
+El episodio termina cuando:
+- El polo se inclina más de 15 grados
+- El carrito se mueve más de 2.4 unidades desde el centro
+- El episodio dura más de 500 pasos de tiempo
+
+## Requisitos
+
+### Requisitos Generales
+- Python 3.8+
+- pip (gestor de paquetes de Python)
+
+### Requisitos para GPU (Opcional)
+- GPU NVIDIA compatible con CUDA
+- Drivers NVIDIA actualizados
+- CUDA Toolkit (versión compatible con PyTorch)
+- Mínimo 4GB de VRAM
+- 8GB de RAM del sistema
 
 ## Instalación
 
-1. Clonar el repositorio (o descargar los archivos):
+### Windows
+
+1. **Clonar el repositorio**:
 ```bash
-git clone <url-del-repositorio>
-cd <nombre-del-directorio>
+# Clonar el repositorio
+git https://github.com/GiomarMC/Application_of_genetic_algorithms.git
+cd algoritmos-geneticos
 ```
 
-2. Crear y activar entorno virtual:
-
-### Windows
+2. **Crear entorno virtual**:
 ```bash
 # Crear entorno virtual
 python -m venv venv
+```
 
+3. **Activar entorno virtual**:
+```bash
 # Activar entorno virtual
 .\venv\Scripts\activate
 ```
 
+4. **Instalar dependencias** (con el entorno virtual activado):
+```bash
+# Instalar PyTorch con soporte CUDA
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Instalar resto de dependencias
+pip install -r requirements.txt
+```
+
 ### Linux
+
+1. **Clonar el repositorio**:
+```bash
+# Clonar el repositorio
+git https://github.com/GiomarMC/Application_of_genetic_algorithms.git
+cd algoritmos-geneticos
+```
+
+2. **Crear entorno virtual**:
 ```bash
 # Crear entorno virtual
 python3 -m venv venv
+```
 
+3. **Activar entorno virtual**:
+```bash
 # Activar entorno virtual
 source venv/bin/activate
 ```
 
-3. Instalar dependencias:
+4. **Instalar dependencias** (con el entorno virtual activado):
 ```bash
-pip install -r requirements.txt
-```
+# Instalar PyTorch con soporte CUDA
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
-## Estructura del Proyecto
-```
-.
-├── genetic_algorithm.py    # Implementación del algoritmo genético
-├── main.py                # Script principal de ejecución
-├── visualize.py           # Visualización de resultados
-├── requirements.txt       # Dependencias del proyecto
-├── .gitignore            # Archivos y carpetas ignorados por git
-├── outputs/              # Directorio para archivos generados
-│   ├── learning_curve.png # Gráfica de aprendizaje
-│   └── *.npy             # Archivos de pesos guardados
-└── README.md             # Este archivo
+# Instalar resto de dependencias
+pip install -r requirements.txt
 ```
 
 ## Uso
 
-1. Asegúrate de tener el entorno virtual activado
-2. Ejecuta el script principal:
-```python
+1. **Activar el entorno virtual** (si no está activado):
+```bash
+# Windows
+.\venv\Scripts\activate
+
+# Linux
+source venv/bin/activate
+```
+
+2. **Ejecutar el programa**:
+```bash
 python main.py
 ```
 
-## Características
-- Red neuronal de dos capas (feed-forward)
-- Selección por torneo
-- Cruce de punto único
-- Mutación gaussiana
-- Elitismo
-- Visualización de la curva de aprendizaje
-- Guardado automático de los mejores individuos
+## Estructura del Proyecto
 
-## Parámetros Configurables
-- Tamaño de población
-- Número de generaciones
-- Tasa de mutación
-- Tamaño de la capa de entrada
-- Tamaño de la capa de salida
-- Tamaño de la capa oculta
-
-## Notas
-- Los resultados del entrenamiento se guardan en la carpeta `outputs/`
-- La gráfica de aprendizaje se guarda como `learning_curve.png`
-- Los mejores individuos se guardan como archivos `.npy`
-
-## Solución de Problemas
-
-### Windows
-Si encuentras errores al instalar las dependencias:
-1. Asegúrate de tener Visual Studio Build Tools instalado
-2. Ejecuta el comando como administrador
-3. Actualiza pip: `python -m pip install --upgrade pip`
-
-### Linux
-Si encuentras errores al instalar las dependencias:
-1. Instala los paquetes de desarrollo necesarios:
-```bash
-sudo apt-get update
-sudo apt-get install python3-dev build-essential
 ```
-2. Actualiza pip: `python3 -m pip install --upgrade pip` 
+.
+├── main.py              # Punto de entrada principal
+├── genetic_algorithm.py # Implementación del algoritmo genético
+├── neural_network.py    # Implementación de la red neuronal
+├── requirements.txt     # Dependencias del proyecto
+└── outputs/            # Directorio para guardar resultados
+    ├── learning_curve.png
+    └── best_individual_*.npy
+```
+
+## Características del Algoritmo
+
+- **Paralelización Automática**: Detecta automáticamente si hay GPU disponible y usa CUDA cuando es posible
+- **Early Stopping**: Detiene el entrenamiento si no hay mejora significativa
+- **Mantenimiento de Diversidad**: Implementa mecanismos para mantener la diversidad de la población
+- **Elitismo**: Preserva los mejores individuos entre generaciones
+- **Mutación Adaptativa**: Tasa de mutación que se ajusta según la diversidad de la población
+
+## Verificación de GPU
+
+Para verificar si CUDA está disponible en tu sistema:
+```python
+import torch
+print(f"CUDA disponible: {torch.cuda.is_available()}")
+print(f"Número de GPUs: {torch.cuda.device_count()}")
+if torch.cuda.is_available():
+    print(f"GPU actual: {torch.cuda.get_device_name(0)}")
+```
+
+## Licencia
+
+Este proyecto está bajo la Licencia MIT. 
