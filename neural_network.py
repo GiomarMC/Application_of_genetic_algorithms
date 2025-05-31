@@ -6,8 +6,8 @@ class NeuralNetwork:
     def __init__(
         self,
         input_size: int,
-        hidden_layers: List[int],
-        output_size: int
+        output_size: int,
+        hidden_layers: List[int] = [16]
     ):
         self.input_size = input_size
         self.hidden_layers = hidden_layers

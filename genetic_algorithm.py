@@ -1,13 +1,13 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import os
 from typing import List
 import multiprocessing as mp
-from functools import partial
 import signal
-import sys
 from neural_network import NeuralNetwork
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from functools import partial
+import sys
 
 
 class GeneticAlgorithm:
@@ -18,7 +18,7 @@ class GeneticAlgorithm:
         initial_mutation_rate: float,
         input_size: int,
         output_size: int,
-        hidden_layers: List[int] = [16, 16],
+        hidden_layers: List[int] = [16],
         elite_size: int = 1,
         crossover_points: int = 1,
         diversity_threshold: float = 0.1,
@@ -53,7 +53,7 @@ class GeneticAlgorithm:
         # Configurar manejador de señales
         signal.signal(signal.SIGINT, self._signal_handler)
         # Crear red neuronal
-        self.nn = NeuralNetwork(input_size, hidden_layers, output_size)
+        self.nn = NeuralNetwork(input_size, output_size, hidden_layers)
         # Initialize population and history
         self.population = self.initialize_population()
         self.best_fitness_history = []
@@ -199,29 +199,6 @@ class GeneticAlgorithm:
             return np.ones_like(fitness_scores)
         return (fitness_scores - min_fitness) / (max_fitness - min_fitness)
 
-    def get_adaptive_mutation_rate(
-        self, generation: int, diversity: float
-    ) -> float:
-        """Get adaptive mutation rate based on generation and diversity."""
-        base_rate = self.initial_mutation_rate * (
-            1 - generation / self.generations
-        )
-        # Increase mutation rate if diversity is low
-        if diversity < self.diversity_threshold:
-            return min(base_rate * 2, 0.5)  # Cap at 0.5
-        return base_rate
-
-    def should_stop_early(self) -> bool:
-        """Check if training should stop early."""
-        if len(self.best_fitness_history) < self.early_stopping_patience:
-            return False
-
-        recent_best = self.best_fitness_history[-self.early_stopping_patience:]
-        best_so_far = max(recent_best[:-1])
-        current_best = recent_best[-1]
-
-        return (current_best - best_so_far) < self.min_fitness_improvement
-
     def plot_learning_curve(self) -> None:
         """Plot learning curve with additional metrics."""
         plt.figure(figsize=(12, 8))
@@ -259,12 +236,9 @@ class GeneticAlgorithm:
                 if self.use_gpu:
                     # Evaluación en GPU
                     with torch.cuda.device(0):
-                        # Convertir población a tensor GPU
                         population_tensor = torch.tensor(
                             self.population, device=self.device
                         )
-
-                        # Evaluar en paralelo usando GPU
                         fitness_scores = []
                         for i in range(
                             0, len(population_tensor), self.num_workers
@@ -279,7 +253,6 @@ class GeneticAlgorithm:
                             fitness_scores.extend(batch_scores)
                         fitness_scores = np.array(fitness_scores)
                 else:
-                    # Evaluación en CPU usando multiprocessing
                     with mp.Pool(processes=self.num_workers) as pool:
                         evaluate_func = partial(
                             self.evaluate_individual,
@@ -290,14 +263,9 @@ class GeneticAlgorithm:
                             pool.map(evaluate_func, self.population)
                         )
 
-                # Calculate and store diversity
                 diversity = self.calculate_population_diversity()
                 self.diversity_history.append(diversity)
-
-                # Normalize fitness scores
                 normalized_fitness = self.normalize_fitness(fitness_scores)
-
-                # Update history
                 best_fitness = np.max(fitness_scores)
                 avg_fitness = np.mean(fitness_scores)
                 self.best_fitness_history.append(best_fitness)
@@ -311,30 +279,41 @@ class GeneticAlgorithm:
                     f"Diversity: {diversity:.4f}"
                 )
 
-                # Check for early stopping
-                if self.should_stop_early():
-                    print("\nDeteniendo temprano debido a falta de mejora...")
-                    break
-
                 # Selection and reproduction with normalized fitness
                 parents = self.select_parents(normalized_fitness)
                 offspring = self.crossover(parents)
 
-                # Adaptive mutation
-                mutation_rate = self.get_adaptive_mutation_rate(gen, diversity)
+                # Ensure offspring size matches population size
+                if len(offspring) < self.population_size:
+                    # If we have fewer offspring than needed, duplicate some
+                    n_missing = self.population_size - len(offspring)
+                    indices = np.random.randint(
+                        0, len(offspring), size=n_missing
+                    )
+                    extra_offspring = offspring[indices]
+                    offspring = np.concatenate([offspring, extra_offspring])
+                elif len(offspring) > self.population_size:
+                    # If we have too many offspring, trim the excess
+                    offspring = offspring[:self.population_size]
+
+                # Fixed mutation rate only
+                mutation_rate = self.initial_mutation_rate
                 offspring = self.mutate(offspring, gen, mutation_rate)
 
-                # Elitism
+                # Elitism (fix broadcasting issue)
                 elite_indices = np.argsort(fitness_scores)[-self.elite_size:]
-                offspring[:self.elite_size] = self.population[elite_indices]
+                elite = self.population[elite_indices]
+                # Ensure offspring has enough space for elite
+                if self.elite_size <= len(offspring):
+                    offspring[:self.elite_size] = elite
+                else:
+                    # If offspring is smaller, just fill what you can
+                    offspring[:len(offspring)] = elite[:len(offspring)]
 
-                # Maintain diversity
                 self.maintain_diversity(fitness_scores)
-
-                # Update population
                 self.population = offspring
 
-                # Save best individual
+                # Guardar mejor individuo de la generación
                 best_idx = np.argmax(fitness_scores)
                 filename = f'best_individual_gen_{gen}.npy'
                 np.save(
@@ -342,9 +321,21 @@ class GeneticAlgorithm:
                     self.population[best_idx]
                 )
 
+                # Guardar estadísticas de la generación
+                stats = {
+                    'best_fitness': best_fitness,
+                    'avg_fitness': avg_fitness,
+                    'diversity': diversity,
+                    'fitness_scores': fitness_scores
+                }
+                np.save(
+                    os.path.join(self.output_dir, f'stats_gen_{gen}.npy'),
+                    stats
+                )
+
         except KeyboardInterrupt:
             print("\nDeteniendo el entrenamiento...")
             self.should_stop = True
         finally:
             self.plot_learning_curve()
-            print("\nEntrenamiento completado.")
+            print("\nEntrenamiento completado.") 
