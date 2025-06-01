@@ -93,46 +93,88 @@ class GeneticAlgorithm:
             (self.population_size, self.nn.weights_size)
         )
 
+    def calculate_fitness(
+        self,
+        steps: int,
+        mean_angle: float,
+        reached_max_steps: bool
+    ) -> float:
+        """Calculate fitness based on steps and reward for angle close to 90
+        degrees."""
+        # Recompensa base por pasos
+        fitness = steps
+
+        # Recompensa adicional si el ángulo promedio está cerca de 90 grados
+        ideal_angle = np.pi/2
+        angle_diff = abs(mean_angle - ideal_angle)
+        if angle_diff < 0.1:  # Muy cerca de 90 grados
+            fitness += 120
+        elif angle_diff < 0.2:
+            fitness += 80
+        elif angle_diff < 0.3:
+            fitness += 40
+
+        # Bonus por llegar a max_steps
+        if reached_max_steps:
+            fitness += 100
+        return max(0, fitness)
+
     def evaluate_individual(
         self,
         individual: np.ndarray,
         env,
         max_steps: int
     ) -> float:
-        """Evaluate individual's fitness over multiple episodes and average."""
-        total = 0
+        """Evaluate individual's fitness using the average of multiple
+        episodes."""
+        rewards = []
         for _ in range(self.eval_episodes):
             state, _ = env.reset()
-            total_reward = 0
             steps = 0
+            angles = []  # Lista para guardar todos los ángulos
+
             for _ in range(max_steps):
                 action = self.nn.get_action(state, individual)
-                state, reward, terminated, truncated, _ = env.step(action)
-                total_reward += reward
+                state, _, terminated, truncated, _ = env.step(action)
+
+                # Guardar el ángulo
+                pole_angle = state[2]
+                angles.append(pole_angle)
                 steps += 1
                 if terminated or truncated:
                     break
-            if steps == max_steps:
-                total_reward += 100
-            total += total_reward
-        return total / self.eval_episodes
+
+            # Calcular el ángulo promedio
+            angles = np.array(angles)
+            mean_angle = np.mean(angles)
+
+            # Calcular fitness para este episodio
+            episode_fitness = self.calculate_fitness(
+                steps=steps,
+                mean_angle=mean_angle,
+                reached_max_steps=(steps == max_steps)
+            )
+            rewards.append(episode_fitness)
+        # Usar el promedio de los puntajes
+        return np.mean(rewards)
 
     def get_mutation_rate(self, generation: int) -> float:
         """Get mutation rate for current generation."""
         return self.initial_mutation_rate * (1 - generation / self.generations)
 
     def select_parents(self, fitness_scores: np.ndarray) -> np.ndarray:
-        """Select parents using tournament selection."""
+        """Seleccionar padres usando selección por torneo de tamaño 2
+        (en vez de ruleta)."""
         parents = []
-        tournament_size = min(3, len(fitness_scores))
+        tournament_size = 2
         for _ in range(len(fitness_scores) - self.elite_size):
-            candidates = np.random.choice(
-                len(fitness_scores),
-                size=tournament_size,
-                replace=False
+            # Selección por torneo
+            indices = np.random.choice(
+                len(fitness_scores), tournament_size, replace=False
             )
-            winner = candidates[np.argmax(fitness_scores[candidates])]
-            parents.append(self.population[winner])
+            tournament_fitness = fitness_scores[indices]
+            winner_idx = indices[np.argmax(tournament_fitness)]
+            parents.append(self.population[winner_idx])
         return np.array(parents)
 
     def crossover(self, parents: np.ndarray) -> np.ndarray:
@@ -153,9 +195,11 @@ class GeneticAlgorithm:
         self, offspring: np.ndarray, generation: int,
         mutation_rate: float = None
     ) -> np.ndarray:
-        """Mutate offspring with optional custom mutation rate."""
+        """Mutar descendencia con una tasa mínima de mutación."""
+        min_mutation_rate = 0.01  # Tasa mínima de mutación
         if mutation_rate is None:
             mutation_rate = self.get_mutation_rate(generation)
+        mutation_rate = max(mutation_rate, min_mutation_rate)  # Aplicar mínimo
         mask = np.random.random(offspring.shape) < mutation_rate
         mutation = np.random.normal(0, 0.1, offspring.shape)
         offspring[mask] += mutation[mask]
@@ -227,7 +271,7 @@ class GeneticAlgorithm:
         plt.close()
 
     def run(self, env, max_steps: int = 500) -> None:
-        """Run genetic algorithm with improved robustness."""
+        """Ejecutar el algoritmo genético con mejoras de diversidad."""
         try:
             for gen in range(self.generations):
                 if self.should_stop:
@@ -279,7 +323,7 @@ class GeneticAlgorithm:
                     f"Diversity: {diversity:.4f}"
                 )
 
-                # Selection and reproduction with normalized fitness
+                # Selección y reproducción con fitness normalizado
                 parents = self.select_parents(normalized_fitness)
                 offspring = self.crossover(parents)
 
@@ -296,20 +340,25 @@ class GeneticAlgorithm:
                     # If we have too many offspring, trim the excess
                     offspring = offspring[:self.population_size]
 
-                # Fixed mutation rate only
+                # Mutación con tasa mínima
                 mutation_rate = self.initial_mutation_rate
                 offspring = self.mutate(offspring, gen, mutation_rate)
 
-                # Elitism (fix broadcasting issue)
+                # Elitismo
                 elite_indices = np.argsort(fitness_scores)[-self.elite_size:]
                 elite = self.population[elite_indices]
-                # Ensure offspring has enough space for elite
                 if self.elite_size <= len(offspring):
                     offspring[:self.elite_size] = elite
                 else:
-                    # If offspring is smaller, just fill what you can
                     offspring[:len(offspring)] = elite[:len(offspring)]
 
+                if (gen + 1) % 10 == 0:
+                    n_inject = max(1, int(0.05 * self.population_size))
+                    inject_indices = np.random.choice(
+                        len(offspring), n_inject, replace=False
+                    )
+                    new_individuals = self.initialize_population()[:n_inject]
+                    offspring[inject_indices] = new_individuals
                 self.maintain_diversity(fitness_scores)
                 self.population = offspring
 
@@ -338,4 +387,4 @@ class GeneticAlgorithm:
             self.should_stop = True
         finally:
             self.plot_learning_curve()
-            print("\nEntrenamiento completado.") 
+            print("\nEntrenamiento completado.")

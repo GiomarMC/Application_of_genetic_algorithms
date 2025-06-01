@@ -26,16 +26,16 @@ def train():
     output_size = 1  # Una salida para decidir izquierda/derecha
 
     # Parámetros del AG
-    population_size = 100  # Aumentar tamaño de población para más diversidad
-    generations = 100  # Más generaciones para mejor convergencia
-    initial_mutation_rate = 0.03  # Reducir tasa de mutación inicial
-    elite_size = max(5, int(0.02 * population_size))  # Aumentar elitismo
-    crossover_points = 3  # Más puntos de cruce para mejor mezcla
-    diversity_reintroduction_rate = 0.1  # Aumentar tasa de reintroducción
-    diversity_threshold = 0.05  # Reducir umbral de diversidad
-    eval_episodes = 10  # Aumentar número de episodios de evaluación
-    early_stopping_patience = 20  # Más paciencia para early stopping
-    min_fitness_improvement = 0.005  # Reducir mejora mínima requerida
+    population_size = 200
+    generations = 50
+    initial_mutation_rate = 0.1
+    elite_size = max(2, int(0.03 * population_size))
+    crossover_points = 2
+    diversity_reintroduction_rate = 0.2
+    diversity_threshold = 0.03
+    eval_episodes = 25
+    early_stopping_patience = 25
+    min_fitness_improvement = 0.001
 
     # Crear AG
     ga = GeneticAlgorithm(
@@ -126,7 +126,34 @@ def visualize_best_individual(gen: int):
         env.close()
 
 
+def check_previous_training() -> bool:
+    """Check if there's previous training data and handle user choice."""
+    if os.path.exists('outputs'):
+        print("\nSe encontró un entrenamiento anterior en la carpeta "
+              "'outputs'.")
+        print("Si continúa, se eliminará el entrenamiento anterior.")
+        while True:
+            choice = input("¿Desea continuar? (s/n): ").lower()
+            if choice in ['s', 'si', 'sí', 'y', 'yes']:
+                print("\nEliminando entrenamiento anterior...")
+                for file in os.listdir('outputs'):
+                    os.remove(os.path.join('outputs', file))
+                os.rmdir('outputs')
+                print("Entrenamiento anterior eliminado.")
+                return True
+            elif choice in ['n', 'no']:
+                print("\nEntrenamiento cancelado.")
+                return False
+            else:
+                print("Por favor, responda 's' o 'n'.")
+    return True
+
+
 def main():
+    # Verificar entrenamiento anterior
+    if not check_previous_training():
+        return
+
     # Entrenar
     train()
 
